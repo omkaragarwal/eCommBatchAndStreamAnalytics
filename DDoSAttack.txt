@@ -1,0 +1,37 @@
+WITH StreamingInput AS (
+    SELECT
+        CAST(EventEnqueuedUtcTime AS datetime) AS EventTime,
+        Body AS EventDataRaw
+    FROM
+        [ecommerce-data-stream]
+    PARTITION BY PartitionId
+),
+ParsedEvents AS (
+    SELECT
+        EventTime,
+        GetRecordPropertyValue(GetRecordPropertyValue(EventDataRaw, ''), 'user_id') AS user_id,
+        GetRecordPropertyValue(GetRecordPropertyValue(EventDataRaw, ''), 'event_type') AS event_type,
+        GetRecordPropertyValue(GetRecordPropertyValue(EventDataRaw, ''), 'timestamp') AS timestamp,
+        GetRecordPropertyValue(GetRecordPropertyValue(EventDataRaw, ''), 'product_id') AS product_id
+    FROM
+        StreamingInput
+),
+DDoSDetected AS (
+    SELECT
+        System.Timestamp() AS AlertTime,
+        user_id,
+        COUNT(*) AS ViewCount
+    FROM ParsedEvents
+    WHERE event_type = 'view_product'
+    GROUP BY user_id, TumblingWindow(second, 5)
+    HAVING COUNT(*) >= 10
+)
+SELECT
+    CAST(AlertTime AS NVARCHAR(MAX)) AS AlertTime,
+    user_id,
+    CAST(ViewCount AS BIGINT) AS ViewCount,
+    'Potential DDoS/Bot Attack: High view count' AS AlertDescription
+INTO
+    [DDoSAlertsQueue]
+FROM
+    DDoSDetected;
